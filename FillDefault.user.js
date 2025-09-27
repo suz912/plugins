@@ -1,9 +1,9 @@
 // ==UserScript==
 // @author         SuZ-helper
-// @name           IITC plugin: Draw tools - Fill default toggler
+// @name           IITC plugin: Draw tools - Fill default toggler (mobile-safe)
 // @category       Tweaks
-// @version        0.1.0
-// @description    Start IITC with polygon fill ON/OFF as you prefer (for Draw tools). Adds a small settings dialog.
+// @version        0.2.0
+// @description    Start IITC with polygon fill ON/OFF as you prefer (Draw tools). Adds a settings dialog and a Leaflet button fallback for mobile.
 // @id             drawtools-fill-default
 // @namespace      https://example.com/iitc/drawtools-fill-default
 // @match          https://intel.ingress.com/*
@@ -13,52 +13,38 @@
 
 function wrapper(plugin_info) {
   if (typeof window.plugin !== 'function') window.plugin = function () {};
-
   plugin_info.buildName = 'local';
   plugin_info.dateTimeVersion = '2025-09-27-000000';
   plugin_info.pluginId = 'drawtools-fill-default';
 
-  window.plugin.drawtoolsFillDefault = {};
-  const mod = window.plugin.drawtoolsFillDefault;
+  const mod = (window.plugin.drawtoolsFillDefault = {});
   const LS_KEY = 'plugin-drawtools-fill-default'; // 'on' | 'off'
 
-  /** returns 'on' or 'off' (meaning "Fill polygons" default) */
   function getFillDefault() {
     const v = localStorage.getItem(LS_KEY);
     return v === 'off' ? 'off' : 'on';
   }
-
-  /** persist 'on' or 'off' */
   function setFillDefault(v) {
     localStorage.setItem(LS_KEY, v === 'off' ? 'off' : 'on');
   }
 
-  /** apply desired default immediately to current Draw tools state */
-  function applyToCurrentSession() {
-    // Draw tools must be present
-    const dt = window.plugin.drawTools;
-    if (!dt) return;
-
-    const wantFill = getFillDefault() === 'on'; // true => 塗りつぶし有効
-    // Draw tools の仕様:
-    // EDFstatus = true  => Empty Drawn Fields (塗りつぶし しない)
-    // EDFstatus = false => 塗りつぶし する
-    const shouldEDF = !wantFill;
-
-    if (typeof dt.EDFstatus === 'boolean' && dt.EDFstatus !== shouldEDF) {
-      dt.EDFstatus = shouldEDF;
-      // 反映（drawtools側のトグル処理を模倣）
-      if (typeof dt.toggleOpacityOpt === 'function') dt.toggleOpacityOpt();
-      if (typeof dt.clearAndDraw === 'function') dt.clearAndDraw();
-    }
+  function ensureCSS() {
+    const css = `
+      .dt-fill-default-btn.leaflet-bar a {
+        display:block; width:26px; height:26px; line-height:26px;
+        text-align:center; text-decoration:none; font-weight:bold;
+        cursor:pointer;
+      }
+      .dt-fill-default-btn a:focus { outline:none; }
+    `;
+    $('<style>').prop('type', 'text/css').text(css).appendTo('head');
   }
 
-  /** simple dialog to pick default */
   function openSettingsDialog() {
-    const curr = getFillDefault(); // 'on'|'off'
+    const curr = getFillDefault();
     const html = $(`
       <div>
-        <p style="margin:0 0 8px;">Draw tools の「Fill the polygon(s)」の<strong>起動時の初期値</strong>を選びます。</p>
+        <p style="margin:0 0 8px;">Draw tools の「Fill the polygon(s)」起動時の初期値を設定します。</p>
         <label style="display:block;margin:6px 0;">
           <input type="radio" name="dt-fill" value="on" ${curr === 'on' ? 'checked' : ''}>
           Fill ON（塗りつぶしあり）
@@ -81,75 +67,109 @@ function wrapper(plugin_info) {
           applyToCurrentSession();
           $(this).dialog('close');
         },
-        Cancel: function () {
-          $(this).dialog('close');
-        },
+        Cancel: function () { $(this).dialog('close'); },
       },
     });
   }
 
-  function addToolbarButton() {
-    if (!window.IITC || !window.IITC.toolbox || !window.IITC.toolbox.addButton) return;
-    window.IITC.toolbox.addButton({
-      label: 'Fill Default',
-      title: 'Draw tools - Fill default settings',
-      action: openSettingsDialog,
-      accesskey: 'f',
-    });
+  function applyToCurrentSession() {
+    const dt = window.plugin.drawTools;
+    if (!dt) return;
+    const wantFill = getFillDefault() === 'on'; // true => 塗りつぶし有効
+    const shouldEDF = !wantFill; // EDFstatus=true → 塗りつぶししない
+
+    if (typeof dt.EDFstatus === 'boolean' && dt.EDFstatus !== shouldEDF) {
+      dt.EDFstatus = shouldEDF;
+      if (typeof dt.toggleOpacityOpt === 'function') dt.toggleOpacityOpt();
+      if (typeof dt.clearAndDraw === 'function') dt.clearAndDraw();
+    }
   }
 
-  /**
-   * タイミング調整：
-   * - draw-tools は setup.priority='high' で起動するため、本プラグインは
-   *   iitcLoaded 後に drawTools の存在を待ち、反映します
-   */
+  // 1) PC向け: toolbox API（あれば）にボタン追加
+  function tryToolboxButton() {
+    try {
+      if (window.IITC && window.IITC.toolbox && window.IITC.toolbox.addButton) {
+        window.IITC.toolbox.addButton({
+          label: 'Fill Default',
+          title: 'Draw tools - Fill default settings',
+          action: openSettingsDialog,
+          accesskey: 'f',
+        });
+        return true;
+      }
+      // 旧来: #toolbox に直接追加（PCとAndroidの一部でOK、iOSは表示されないこと多し）
+      const $tb = $('#toolbox');
+      if ($tb.length) {
+        const $btn = $('<a>')
+          .attr('title', 'Draw tools - Fill default settings')
+          .text('Fill Default')
+          .css({ cursor: 'pointer', marginLeft: '6px' })
+          .on('click', openSettingsDialog);
+        $tb.append($btn);
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  // 2) モバイルでも確実に見える Leaflet コントロールを置く（フォールバック）
+  function addLeafletControlButton() {
+    if (!window.map || !window.L || !L.Control) return false;
+
+    const Ctl = L.Control.extend({
+      options: { position: 'topleft' },
+      onAdd: function () {
+        const container = L.DomUtil.create('div', 'leaflet-bar dt-fill-default-btn');
+        const link = L.DomUtil.create('a', '', container);
+        link.href = '#';
+        link.title = 'Draw tools - Fill default';
+        link.innerHTML = 'F'; // 小さな「F」ボタン
+        L.DomEvent.on(link, 'click', L.DomEvent.stop)
+                  .on(link, 'click', function () { openSettingsDialog(); });
+        return container;
+      },
+    });
+    const ctl = new Ctl();
+    ctl.addTo(map);
+    return true;
+  }
+
+  function addUIEntryPoints() {
+    ensureCSS();
+    const ok = tryToolboxButton();
+    if (!ok) addLeafletControlButton();
+  }
+
+  // Draw tools 出現を待って適用
   function onLoaded() {
-    // できるだけ早く適用（drawToolsがまだなら少し待つ）
     let tries = 0;
-    const maxTries = 30; // ~3秒
-    (function waitForDrawTools() {
+    const maxTries = 50; // ~5秒
+    (function waitForDT() {
       if (window.plugin && window.plugin.drawTools && window.plugin.drawTools.drawnItems) {
         applyToCurrentSession();
-        addToolbarButton();
+        addUIEntryPoints();
       } else if (tries++ < maxTries) {
-        setTimeout(waitForDrawTools, 100);
+        setTimeout(waitForDT, 100);
       } else {
-        // 最低限ボタンだけは置いておく（後から押せば適用される）
-        addToolbarButton();
+        // 最低限 UI は出す（後から設定して「Save & Apply」で反映される）
+        addUIEntryPoints();
       }
     })();
   }
 
-  // hook
-  if (window.bootPlugins) {
-    window.bootPlugins.push(onLoaded);
-  } else {
-    window.bootPlugins = [onLoaded];
-  }
-  // if IITC already loaded
-  if (window.iitcLoaded && typeof onLoaded === 'function') {
-    onLoaded();
-  }
+  // IITC フック
+  if (window.bootPlugins) window.bootPlugins.push(onLoaded);
+  else window.bootPlugins = [onLoaded];
+
+  if (window.iitcLoaded) onLoaded();
 }
 
 var setup = function () {};
-// inject
 (function () {
   const script = document.createElement('script');
   const info = {};
   if (typeof unsafeWindow !== 'undefined' && unsafeWindow !== window) {
-    const wrapper = [
-      '(',
-      wrapper.toString(),
-      ')(',
-      JSON.stringify({
-        buildName: 'local',
-        dateTimeVersion: '2025-09-27-000000',
-        pluginId: 'drawtools-fill-default',
-      }),
-      ');',
-    ].join('');
-    script.textContent = wrapper;
+    script.textContent = '(' + wrapper + ')(' + JSON.stringify(info) + ');';
   } else {
     script.appendChild(document.createTextNode('(' + wrapper + ')({});'));
   }
