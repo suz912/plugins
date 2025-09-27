@@ -72,7 +72,7 @@ function wrapper(plugin_info) {
 
     window.dialog({
       html,
-      title: 'Draw tools ? Fill default',
+      title: 'Draw tools - Fill default',
       width: 360,
       buttons: {
         'Save & Apply': function () {
@@ -92,7 +92,7 @@ function wrapper(plugin_info) {
     if (!window.IITC || !window.IITC.toolbox || !window.IITC.toolbox.addButton) return;
     window.IITC.toolbox.addButton({
       label: 'Fill Default',
-      title: 'Draw tools ? Fill default settings',
+      title: 'Draw tools - Fill default settings',
       action: openSettingsDialog,
       accesskey: 'f',
     });
